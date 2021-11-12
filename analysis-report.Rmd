@@ -1,0 +1,220 @@
+---
+title: "Final exam"
+author: "Yiyang Li"
+date: "March 15, 2021"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+# feel free to change these options, load libraries here, etc.
+knitr::opts_chunk$set(echo = TRUE)
+library(Amelia)
+library(mice)
+library(broom.mixed)
+
+library(nlme)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(ggplot2)
+library(lattice)
+```
+
+```{r, include=FALSE}
+# Load data
+sch.data <- read.table("SCHIZREP.DAT.txt", header=TRUE, sep=" ")
+colnames(sch.data) <- c("id", "IMPS79", "week", "treatment", "male")
+head(sch.data) #This data is already in long-format so no need to transfer further
+```
+
+## Introduction
+
+The data set comes from the National Institute of Mental Health Schizophrenia Collaborative Study, addressing on treatment-related changes in overall symptom severity for a sample of schizophrenic patients. Indicated by the covariate $treatment$, each patient was assigned to either the treatment group (would be given one of chlorpromazine, fluphenazine or thioridazine, $treatment=1$) or the control group (would be given placebo,  $treatment=0$). The response consists of measurements from psychiatric raters at four time points: weeks 0, 1, 3 and 6, based on Inpatient Multidimensional Psychiatric Scale (IMPS) Item 79 thus called $IMPS79$. The data set also contains binary sex as a baseline covariate called $male$ (1 indicates male and 0 indicates female). With this construction, the data set is longitudinal and have missing data entries.  
+
+In this report, we are going to analyze whether there is a statistically significant difference between the treatment group and the control group. We are going to explore the data set and its missing patterns, then propose an appropriate model to run regressions. After that, we will draw a conclusion on whether individual trajectories of symptom severity differ according to treatment assignment, based on our regression results. At the end, we will mention what might be further exlpored.
+
+
+## Main Body
+
+
+### Missing data pattern and data cleaning
+
+Figure 1 in the appendix shows the missing pattern of the data set. From $427$ participants, there are $312$ ($73.1\%$) having all four measurements and $74$ ($17.3\%$) having three of four measurements. If a participant misses measurements from a time point and does not come back at the end of study, we say this participant drops out. From $115$ participants who lack one or more measurements, $101$ ($87.8\%$) drop out. Considering the study is on treatment-related changes in symptom severity, it is possible that some participants feel better or worse in their wellness after some time point, which contributes to their dropping out. Since the drop-out rate could be associated with the response, and observed variable, we assume the missing pattern is missing at random (MAR). With the MAR pattern and $73.1\%$ of complete cases, we will perform two regressions based on the original data and the complete data. 
+
+
+### Exploratory analysis
+
+The figure below shows average levels of $IMPS79$ change over time in two comparative situations: grouping by binary sex and grouping by treatment group. We compuate group means using the original data, where some participants lack one or more measurements. From the figure, male participants show similar trend of change in IMPS79 rate over time as female participants, while treatment group participants show more change over time than control group participants. Compared to the left subgraph, the right subgraph has larger difference in downward trends between treatment and control groups, but at this stage we cannot conclude whether this difference comes from treatment effect, time issue, or a combination of both. Because we have not handle missing values or build up longitudinal models, this graph cannot serve as evidence for statistical significance of the treatment effect. These two concerns will be addressed in the following subsections.
+
+```{r, include=FALSE}
+sch.wide <- spread(sch.data, week, IMPS79)
+```
+
+```{r, echo=FALSE}
+#created grouped means and compute their limits for better comparable graphs
+male.ind <- which(sch.wide$male==1)
+i79.male <- sch.wide[male.ind,4:7]
+male.mean <- c(mean(i79.male$`0`, na.rm = TRUE), mean(i79.male$`1`, na.rm = TRUE), mean(i79.male$`3`, na.rm = TRUE), mean(i79.male$`6`, na.rm = TRUE))
+female.ind <- which(sch.wide$male==0)
+i79.female <- sch.wide[female.ind,4:7]
+female.mean <- c(mean(i79.female$`0`, na.rm = TRUE), mean(i79.female$`1`, na.rm = TRUE), mean(i79.female$`3`, na.rm = TRUE), mean(i79.female$`6`, na.rm = TRUE))
+t.ind <- which(sch.wide$treatment==1)
+i79.t <- sch.wide[t.ind,4:7]
+t.mean <- c(mean(i79.t$`0`, na.rm = TRUE), mean(i79.t$`1`, na.rm = TRUE), mean(i79.t$`3`, na.rm = TRUE), mean(i79.t$`6`, na.rm = TRUE))
+c.ind <- which(sch.wide$treatment==0)
+i79.c <- sch.wide[c.ind,4:7]
+c.mean <- c(mean(i79.c$`0`, na.rm = TRUE), mean(i79.c$`1`, na.rm = TRUE), mean(i79.c$`3`, na.rm = TRUE), mean(i79.c$`6`, na.rm = TRUE))
+lims <- c(min(male.mean, female.mean, t.mean, c.mean), max(male.mean,female.mean, t.mean, c.mean))
+#compare mean changes grouped by sex
+par(mfrow=(c(1,2)))
+plot(x=c(0,1,3,6), y=male.mean, xlab = "Measure week", ylab = "IMPS79 rate", main = "Mean IMPS79 Rate", col = "blue", type = "l", ylim =lims)
+lines(x=c(0,1,3,6), y=female.mean, col = "red")
+legend(0, 3.5, legend=c("Male", "Female"), col=c("blue", "red"), lty = 1, cex = 0.7)
+#compare mean changes grouped by treatment
+plot(x=c(0,1,3,6), y=male.mean, xlab = "Measure week", ylab = "IMPS79 rate", main = "Change Over Time", col = "green", type = "l", ylim =lims)
+lines(x=c(0,1,3,6), y=c.mean, col = "black")
+legend(0, 3.5, legend=c("Treatment", "Control"),
+       col=c("green", "black"), lty = 1, cex=0.7)
+```
+  
+Below is a contingency table for binary sex and group assignment. $75.2\%$ of female participants and $77.8\%$ of male participants are assigned in the treatment group. Considering each participant in the treatment group is assigned one of three drugs, we believe the treatment assignment is random over binary sex, and there is no interaction between $male$ and $treatment$.   
+
+```{r, echo=FALSE}
+sex.trt <- table(sch.data$male, sch.data$treatment)
+colnames(sex.trt) <- c("Control", "Treatment")
+rownames(sex.trt) <- c("Female", "Male")
+kable(sex.trt, caption="Treatment assignments between binary sex")
+```
+
+Fiture 2 in the appendix shows the mean and standard deviation of $IMPS79$ within each participant during the whole study, using data from participants with all four measurements. The standard deviation ranges from $0$ to around $2.5$. Considering means of these rates mainly falls into the range from $2$ to $6$, the within individual variation needs to be taken into consideration. 
+
+The figure below shows observed and fitted linear trajectories for a sample of 9, sampled from participants with all four measurements. From this figure, the linear change in symptom severity over time appears to be reasonable to assume. Initial values, or severity at the week 0 vary substaintially between individuals. Slopes, orseverity change over time also vary substaintially between individuals, with some show positive trends while others show negative trends.
+
+
+```{r, include=FALSE}
+sch.comp <- na.omit(sch.wide)
+n.comp <- nrow(sch.comp)
+sch.comp$sd <- rep(0, n.comp)
+sch.comp$mean <- rep(0, n.comp)
+for(i in 1:n.comp){
+  sch.comp$sd[i] <- sd(sch.comp[i,4:7])
+  sch.comp$mean[i] <- mean(as.numeric(sch.comp[i,4:7]))
+}
+sch.comp.long <- gather(sch.comp, week, IMPS79, `0`:`6`, factor_key=TRUE)
+sch.comp.long$week <- as.numeric(sch.comp.long$week)
+```
+
+```{r, echo=FALSE}
+# randomly pick 9 individuals with all four measurements to s
+set.seed(123)
+ind <- sample(312, size = 8)
+ind <- sch.comp$id[ind]
+xyplot(IMPS79~week | id, 
+       data=sch.comp.long[sch.comp.long$id %in% ind, ], 
+       panel=function(x,y){
+         panel.xyplot(x, y)
+         panel.lmline(x,y)
+       }, ylim=c(0, 8), as.table=T)
+```
+
+
+### Model selection
+
+Explanatory analysis suggests two main source of variation in overall symptom severity: time ($week$) and treatment group assignment ($treatment$). To capture the longitudinal change and the treatment effect, we propose the linear mixed-effects model (LMM). 
+
+LMM will be applied to the original data set and the complete case data set, followed by a comparison of regression results. The response $IMPS79$ will be treated as numeric. The baseline covariate $treatment$ will be treated as factor and the time covariate $week$ will be treated as numeric to keep ordinal. The random effect model will contain a random intercept and a random slope for $week$. In this way, the interaction term of $treatment$ and $week$ will appear in the expanded LMM formula.
+
+Two baseline covariates, $treatment$ and $male$ do not change over time. From the left subgraph in subsection "Explanatory Analysis", binary sex does not seem to have association with the overall symptom severity thus will be excluded from the regression. 
+
+Key coefficients to pay attention on are those for $treatment$ and the interaction of $treatment$ and $week$. Since we regress on a hierarchical model, if the interaction is statistically significant, so is the main effect. Hence, we can conclude this data set shows evidence for difference between the treatment and control groups and association between time and treatment. If the former is statistically significant while the latter is not, we can conclude the data set shows evidence for a treatment effect but not for an association between time and treatment. If neither shows to be statistically significant, we can conclude this data set does not provide evidence for a treatment effect on symptom severity.
+
+
+### Model Fitting and results
+
+```{r, include=FALSE}
+mod_mar <- lme(fixed= IMPS79 ~ as.factor(treatment)*week,
+                           data=sch.data,
+                           random= ~ 1 + week | id,
+                           method="ML")
+mod_comp <- lme(fixed= IMPS79 ~ as.factor(treatment)*week,
+                           data=sch.comp.long,
+                           random= ~ 1 + week | id,
+                           method="ML")
+```
+```{r, echo=FALSE}
+compare <- round(cbind(summary(mod_mar)$tTable[,c(1:2,5)],
+                       summary(mod_comp)$tTable[,c(1:2,5)]), 3)
+colnames(compare) <- c("MAR estimate", "SE", "p-value",
+                       "Complete case estimate", "SE", "p-value")
+rownames(compare) <- c("intercept", "treatment", "week", "treatment:week")
+kable(compare, caption="Comparing estimates and standard errors of the fixed effect parameters")
+```
+
+The table above shows our results from fitting LMM models with both the original data and the complete case data. In both models, the corresponding data set provides evidence for the interaction between $treatment$ and $week$. Following the last subsection, treatment-related changes are statistically significant in overall symptom severity. At $95\%$ significance level, participants who are assigned in the treatment group have steeper decrease in symptom severity over time than those who are assigned to the control group. The overall symptom severity decrease over time in both models, also at $95\%$ significance level. 
+
+There are also difference between these two models. In the model fitted with the original data set, the main effect of treatment assignment is negative while in the other fitted with completed case data set, the same main effect shows to be positive. However, this does not mean the treatment raises the symptom severity in the second model. If a participant is re-assigned from the control group to the treatment group, the model suggests to expect this participant having higher symptom severity at week 0, holding other covariates constant. Numeric estimates are also different in two models, but they agree on the direction of treatment effect as discussed in the last paragraph.  
+
+```{r, include=FALSE}
+summary(mod_mar)
+```
+```{r, include=FALSE}
+summary(mod_comp)
+```
+
+```{r, echo=FALSE}
+fixef.mar <- fixef(mod_mar)
+fit.mar.c <- fixef.mar[[1]] + 0*fixef.mar[[3]] +
+  sch.data$week[1:4]*fixef.mar[[3]] +
+  0*sch.data$week[1:4]*fixef.mar[[4]]   
+fit.mar.t <- fixef.mar[[1]] + 1*fixef.mar[[3]] +
+  sch.data$week[1:4]*fixef.mar[[3]] +
+  1*sch.data$week[1:4]*fixef.mar[[4]]  
+
+fixef.comp <- fixef(mod_comp)
+fit.comp.c <- fixef.comp[[1]] + 0*fixef.comp[[3]] +
+  c(0,1,3,6)*fixef.comp[[3]] +
+  0*c(0,1,3,6)*fixef.comp[[4]] 
+fit.comp.t <- fixef.comp[[1]] + 1*fixef.comp[[3]] +
+  c(0,1,3,6)*fixef.comp[[3]] +
+  1*c(0,1,3,6)*fixef.comp[[4]] 
+plot(sch.data$week[1:4], fit.mar.c, ylim=c(0, 8), type="b", 
+     ylab="predicted severity", xlab="week", pch=2)
+lines(sch.data$week[1:4], fit.mar.t, type="b", pch=0)   
+lines(sch.data$week[1:4], fit.comp.c, type="b", pch=17)   
+lines(sch.data$week[1:4], fit.comp.t, type="b", pch=15)   
+title("Model Prediction Comparison \n Original data set versus Complete case data set") 
+legend(0, 3, c("original, control", "original, treatment", 
+                  "complete, control", "complete, treatment"), pch=c(2,0,17,15))
+```
+
+Above is a graph for predicted symptom severity on time for treatment group versus control group in both models. From the above analysis, we can conclude that the data set provides evidence for an association between receiving treatment and a faster decrease in overall symptom severity. Since the assignment procedures are not provided in detail, we stay conservative and do not draw any causal conclusion from the analysis. 
+
+
+## Summary
+
+After exploring the data set, handling missing values and building models, we conclude the treatment assignment significantly contributing to patient recovery over the course of 6 weeks. If considering only those participants who stayed until the end of study, there is a significance difference between the treatment group and the control group at $95\%$ level. With models fitting on both the original data set and the complete case data set, we are still confident about the conclusion. More details of this study could be exlpored, including the sampling produre, pattern mixture model fitting and how might these change the answer to "whether the treatment helps on patient recovery over 6 weeks".
+
+
+## Appendix
+
+*Figure 1*
+
+```{r, include=FALSE}
+fig <- missmap(sch.wide[,4:7], rank.order=FALSE)
+fig
+```
+```{r, echo=FALSE}
+fig2 <- md.pattern(sch.wide[,4:7])
+```
+
+
+*Figure 2*
+
+```{r, echo=FALSE}
+plot(sch.comp$sd, type = "l",lty=3, main = "Within Participant IMPS79 Rate Mean and SD", xlab = "Participant", ylab = "Size", ylim = c(0,max(sch.comp$mean)+1))
+lines(sch.comp$mean, lty=1)
+legend(0, 7.9, legend=c("Mean", "SD"),
+       col="black", lty = c(1,3), cex=0.8)
+```
+
+
